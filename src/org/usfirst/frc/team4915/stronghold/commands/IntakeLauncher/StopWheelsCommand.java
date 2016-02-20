@@ -1,8 +1,9 @@
 package org.usfirst.frc.team4915.stronghold.commands.IntakeLauncher;
 
+import org.usfirst.frc.team4915.stronghold.Robot;
+
 import edu.wpi.first.wpilibj.command.Command;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
-import org.usfirst.frc.team4915.stronghold.Robot;
 
 public class StopWheelsCommand extends Command {
 
@@ -13,13 +14,12 @@ public class StopWheelsCommand extends Command {
 
     @Override
     protected void initialize() {
-        Robot.intakeLauncher.setSpeedAbort();
+        Robot.intakeLauncher.setWheelsFinished(true);
     }
 
     @Override
     protected void execute() {
-        SmartDashboard.putString("Intake Flywheels", "Right: " + Double.toString(Robot.intakeLauncher.getIntakeRightMotor().getSpeed()) + " Left: "
-                + Double.toString(Robot.intakeLauncher.getIntakeLeftMotor().getSpeed()));
+        SmartDashboard.putString("Flywheels spinning ", "nowhere");
     }
 
     @Override
@@ -29,12 +29,11 @@ public class StopWheelsCommand extends Command {
 
     @Override
     protected void end() {
-        isFinished();
+        
     }
 
     @Override
     protected void interrupted() {
 
     }
-
 }

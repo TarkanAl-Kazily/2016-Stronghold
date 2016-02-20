@@ -1,8 +1,9 @@
 package org.usfirst.frc.team4915.stronghold.commands.IntakeLauncher;
 
+import org.usfirst.frc.team4915.stronghold.Robot;
+
 import edu.wpi.first.wpilibj.command.Command;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
-import org.usfirst.frc.team4915.stronghold.Robot;
 
 public class SpinLaunchWheelsOutCommand extends Command {
 
@@ -14,27 +15,28 @@ public class SpinLaunchWheelsOutCommand extends Command {
 
     @Override
     protected void initialize() {
-        Robot.intakeLauncher.setSpeedLaunch();
+        Robot.intakeLauncher.setWheelsFinished(false);
     }
 
     @Override
     protected void execute() {
-        SmartDashboard.putString("Intake Flywheels", "Right: " + Double.toString(Robot.intakeLauncher.getIntakeRightMotor().getSpeed()) + " Left: "
-                + Double.toString(Robot.intakeLauncher.getIntakeLeftMotor().getSpeed()));
+        Robot.intakeLauncher.setSpeedLaunch();
+        SmartDashboard.putString("Flywheels spinning ", "outward");
     }
 
     @Override
     protected boolean isFinished() {
-        return true;
+        // Ends once the command to retract the pneumatic ends
+        return Robot.intakeLauncher.areWheelsFinished();
     }
 
     @Override
     protected void end() {
-
+        SmartDashboard.putString("Boulder in Basket: ", "No");
     }
 
     @Override
     protected void interrupted() {
-
+        end();
     }
 }

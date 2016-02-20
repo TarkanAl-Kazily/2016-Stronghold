@@ -16,6 +16,7 @@ import sys, traceback
 import argparse
 import numpy as np
 import math
+import daemon
 from multiprocessing.pool import ThreadPool
 from collections import deque
 
@@ -26,6 +27,13 @@ import common
 class App:
     def __init__(self):
         self.args = self.parseArgs()
+        if self.args.daemonize:
+            with daemon.DaemonContext():
+                self.go()
+        else:
+            self.go()
+
+    def go(self):
         # args is argparser.Namespace: an object whose members are 
         # accessed as:  self.args.cannedimages
 
@@ -48,7 +56,11 @@ class App:
         self.latency = common.StatValue()   
         self.frameT = common.StatValue() 
         self.lastFrameTime = common.clock()
+        self.lastStashTime = 0
+        self.stashFilename = "/var/tmp/imgServer.home/currentImage.jpg"
+        self.stashParams = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
         self.zeros = (0,0,0,0,0,0)
+        self.LUT =  np.array(range(0,256)).astype('uint8')
 
         self.indent = ' ' * 50
         self.lastStatus = ""
@@ -64,6 +76,8 @@ class App:
             'houghlines',
             'contours',
             'ORB',
+            'dance1',
+            'gamma',
 
             'b',
             'g',
@@ -78,9 +92,9 @@ class App:
         self.cmodeValueCache = {
             'adaptiveThreshold': [-4, 0, 0, 0, 0, 0],
             'threshold':         [75, 0, 0, 0, 0, 0],
-            'huerange*valrange': [79, 91, 100, 255, 0, 0],
+            'huerange*valrange': [55, 100, 255, 255, 0, 0], # works for g LED
             'canny':             [10, 200, 0, 0, 0, 0],
-            'simpleblob':        [75, 150, 5, 150, 0, 0], 
+            'simpleblob':        [75, 150, 20, 40**2, 0, 0], 
                           # minThresh
                           # maxThresh
                           # thresStep
@@ -103,10 +117,17 @@ class App:
                           # scaleFactor [1 -> 2  (0->255)]
                           # nlevels
                           # patchSizea == edgeThreshold
+            'dance1':		[20,20,0,0,0,0],
+            			  #X(degrees)
+            			  #Y(degrees)
+            			  #Not rotating correctly (not interpreting correctly)
+            'gamma':		[34,0,0,0,0,0],
+            			  #alpha
+            			  #beta
             'r': self.zeros,
             'g': self.zeros,
             'b': self.zeros,
-            'h': self.zeros,
+            'h':            [0, 61, 0, 0, 0, 0],
             's': self.zeros,
             'v': self.zeros,
             'rgb': self.zeros
@@ -122,6 +143,8 @@ class App:
             54: self.cmodelist[6], # houghlines
             55: self.cmodelist[7], # contours
             56: self.cmodelist[8], # ORB
+            57: self.cmodelist[9], # dance1
+            48: self.cmodelist[10],# 0 key: gamma
 
             98: 'b',
             99: 'rgb',
@@ -160,8 +183,8 @@ class App:
             198: ("v5Down",  (0, 0, 0, 0, -1, 0)), # f9
             199: ("v5Up  ",  (0, 0, 0, 0, 1, 0)), # f10
 
-            200: ("v6Down",  (0, 0, 0, 0, 0, -1)), # f10
-            201: ("v6Up  ",  (0, 0, 0, 0, 0, 1)),  # f11
+            200: ("v6Down",  (0, 0, 0, 0, 0, -1)), # f11
+            201: ("v6Up  ",  (0, 0, 0, 0, 0, 1)),  # f12
         }
 
         self.cmode = self.getCmode(self.args.algorithm)
@@ -171,7 +194,10 @@ class App:
 
     # -----------------------------------------------------------------
     def Run(self):
-        print("\n\nkeys:\n" \
+        if self.args.nodisplay:
+            print("\nimgExplore: running in nodisplay mode (keys inactive)")
+        else:
+            print("\n\nkeys:\n" \
       "  ESC: exit\n\n" \
       "  c: rgb\n" \
       "  r: red\n" \
@@ -184,36 +210,43 @@ class App:
       "  2: threshold          (thresh,inv)\n"\
       "  3: huerange*valrange  (hmin,hmax,vmin,vmax)\n"\
       "  4: canny edges        (thresh/10, range)\n"\
-      "  5: simple blobs       (thresh0,thresh1,minA,aMult,colorthresh)\n"\
+      "  5: simple blobs       (thresh0,thresh1,treshStep,minA,colorthresh)\n"\
       "  6: houghlines         (rho,theta,thresh,minlen,maxgap)\n"\
       "  7: contours           (mode:0-3,method:0-3,offset,id(-1:all),depth)\n"\
       "  8: ORB features       (nfeatures,scaleFactor(0->255)],patchSize)\n"\
-      "  9: PlaneTracker       (unimplemented)\n"\
+      "  9: dance1         	   (minX,maxX)\n"\
+      "  0: gamma         	   (gamma)\n"\
       "\n"\
       "  F1,F2:            -/+ v1\n"\
       "  F3,F4:            -/+ v2\n"\
       "  F5,F6:            -/+ v3\n"\
       "  F7,F8:            -/+ v4\n"\
       "  F9,F10:           -/+ v5\n"\
-      "  F10,F11:          -/+ v6\n"\
+      "  F11,F12:          -/+ v6\n"\
       "\n"\
       "  <right arrow>:    increase img seq frame\n"\
       "  <left arrow>:     decrease img seq frame\n"\
           )
 
         if not self.fnpat:
-            vsrc = cv2.VideoCapture(0)
-            if not vsrc or not vsrc.isOpened():
-                print("Problem opening video source")
-                vsrc = None
+            for i in range(0, 4):
+                vsrc = cv2.VideoCapture(i)
+                if not vsrc or not vsrc.isOpened():
+                    print("Problem opening video source %d" % i)
+                    vsrc = None
+                else:
+                    break
+
+            if not vsrc:
                 exit(1)
             else:
-                w = vsrc.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH)
-                h = vsrc.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT)
-                self.putNotice("video is %dx%d" % (w, h))
-                if 0:
-                    vsrc.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH, w)
-                    vsrc.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT, h)
+                ret1 = vsrc.set(cv2.cv.CV_CAP_PROP_FRAME_WIDTH, 1280)
+                ret2 = vsrc.set(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT, 720)
+                print(ret1, ret2)
+                if 1:
+                    w = vsrc.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH)
+                    h = vsrc.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT)
+                    print("video res: %d %d" % (w,h))
         else:
             vsrc = None
 
@@ -224,12 +257,11 @@ class App:
                 self.latency.update(common.clock() - t0)
                 self.robotCnx.SetFPS(int(1/self.frameT.value))
 
-                if not self.args.nodisplay:
-                    self.drawStr(frame, (20, 20), 
-                        "latency       : %.1f ms" % (self.latency.value*1000))
-                    self.drawStr(frame, (20, 40), 
-                        "frame interval: %.1f ms" % (self.frameT.value*1000))
-                    self.showImg(frame, keypoints, lines, contours)
+                self.drawStr(frame, (20, 20), 
+                    "latency       : %.1f ms" % (self.latency.value*1000))
+                self.drawStr(frame, (20, 40), 
+                    "frame interval: %.1f ms" % (self.frameT.value*1000))
+                self.showImg(frame, keypoints, lines, contours)
 
             if vsrc:
                 # Here we have a video source... Capture the image in the 
@@ -247,8 +279,8 @@ class App:
                                             (self, self.mainImg.copy(), t))
                     self.pending.append(task)
 
-                ret = self.checkKey(1, self.cmode, self.index, self.values)
-                done,self.update,self.cmode,self.index,self.values,msg=ret
+                done,self.update,self.cmode,self.index,self.values,msg = \
+                    self.checkKey(1, self.cmode, self.index, self.values)
 
                 if msg:
                     self.putStatus(msg)
@@ -300,8 +332,9 @@ class App:
 
                     self.lastFn = fn
 
-                ret = self.checkKey(10, self.cmode, self.index, self.values)
-                done,self.update,self.cmode,self.index,self.values,msg = ret
+                done,self.update,self.cmode,self.index,self.values,msg = \
+                    self.checkKey(10, self.cmode, self.index, self.values)
+
                 if msg:
                     self.putStatus(msg)
 
@@ -319,18 +352,26 @@ class App:
         #   debugv:  display, fakerobot, video
         parser = argparse.ArgumentParser()
         parser.add_argument("-c", "--cannedimages",
-                            help="use canned images instead of video", 
-                            action='store_true')
+                help="use canned images instead of video", 
+                action='store_true')
         parser.add_argument("-n", "--nodisplay",
-                            help="disable display of images to screen",
-                            action='store_true')
+                help="disable display of images to screen",
+                action='store_true')
         parser.add_argument("-f", "--fakerobot",
-                            help="connect to fake robot on localhost", 
-                            action='store_true')
+                help="connect to fake robot on localhost", 
+                action='store_true')
         parser.add_argument("-a", "--algorithm",
-                            default=0,
-                            type=int,
-                            help="select an algorithm between 0 and 6")
+                default=0,
+                type=int,
+                help="select an algorithm between 0 and 6")
+        parser.add_argument("-s", "--stashinterval",
+                default=0,
+                type=float,
+                help="number of seconds between image stashes (0 means off)")
+        parser.add_argument("-d", "--daemonize",
+                help="put imgExplore in background",
+                action='store_true')
+
         return parser.parse_args()
 
     def simpleThreshold(self, frame, vals=None):
@@ -371,13 +412,19 @@ class App:
                 mode = (cv2.COLOR_BGR2HSV, cv2.COLOR_HSV2BGR)
                 hsv = cv2.cvtColor(frame, mode[0])
                 if cmode == 'h':
-                    if mode[0] == cv2.COLOR_BGR2HSV: 
-                        hsv[:,:,1] = 255 # s = 1
-                        hsv[:,:,2] = 128 # v = .5
+                    if 0:
+                        if mode[0] == cv2.COLOR_BGR2HSV: 
+                            hsv[:,:,1] = 255 # s = 1
+                            hsv[:,:,2] = 128 # v = .5
+                        else:
+                            hsv[:,:,1] = 128 # l = .5 
+                            hsv[:,:,2] = 255 # s = 1
+                        frame = cv2.cvtColor(hsv, mode[1])
                     else:
-                        hsv[:,:,1] = 128 # l = .5 
-                        hsv[:,:,2] = 255 # s = 1
-                    frame = cv2.cvtColor(hsv, mode[1])
+                        h,s,v = cv2.split(hsv)
+                        # now find the interesting range of hues..
+                        frame = cv2.inRange(h, values[0], values[1])
+                        #frame = frame * v
                 elif cmode == 's':
                     # extract the s as grayscale
                     if mode[0] == cv2.COLOR_BGR2HSV: 
@@ -436,7 +483,7 @@ class App:
                     # Filter by Area.
                     bp.filterByArea = True
                     bp.minArea = values[3]       # 500
-                    bp.maxArea = (640 * 480) / 3   
+                    bp.maxArea = (640 * 480) / 5   
 
                     # Filter by Circularity
                     bp.filterByCircularity = False
@@ -453,9 +500,25 @@ class App:
                     detector = cv2.SimpleBlobDetector(bp)
                     self.algostate["blobdetector"] = detector
                 else:
-                    detector = self.algostate["blobdetector"] 
-
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    detector = self.algostate["blobdetector"]
+                if 0:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                elif 0:
+                    frame = self.hvRange(frame)
+                elif 0:
+                    hvals = self.getCmodeValues('h')
+                    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                    frame,s,v = cv2.split(hsv)
+                    frame = cv2.inRange(frame, hvals[0], hvals[1])
+                else:
+                    gvals = self.getCmodeValues('gamma')
+                    gamma = 1 + 10*gvals[0]/100.0
+                    self.putNotice('gamma: %f' % gamma)
+                    for i in range(0, 256):
+                        self.LUT[i] = 255 * ((i/255.0) ** gamma)
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    frame = cv2.LUT(gray, self.LUT)
+   
                 keypoints = detector.detect(frame) # we'll draw them
                 keypoints = self.robotCnx.NewKeypoints(keypoints)
             elif cmode == "houghlines":
@@ -503,43 +566,65 @@ class App:
                 keypoints = orb.detect(gray, None)
                 self.putNotice('ORB features: %d' % len(keypoints))
                 frame = gray
+            elif cmode == 'dance1':
+            	t = common.clock()*2*math.pi/5
+            	x = math.sin(t)*values[0]/27*320 + 320 #[0, 640]s/
+            	kp = cv2.KeyPoint(x, 240, 10)
+            	keypoints = self.robotCnx.NewKeypoints([kp])
+            elif cmode == 'gamma':
+                # Since our inputs are normalized to [0, 1]
+                # we want a power > 1 to reduce darker shades.
+                # map values [0, 100] -> [1 - 10]
+                gamma = 1 + 10*values[0]/100.0
+                self.putNotice('gamma: %f' % gamma)
+            	for i in range(0, 256):
+            		self.LUT[i] = 255 * ((i/255.0) ** gamma)
+            	gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            	frame = cv2.LUT(gray, self.LUT)           		
             else:
                 print("unknown cmode: " + cmode)
         return frame, t0, keypoints, lines, contours
 
     def showImg(self, frame, keypoints, lines, contours):
-        if not self.args.nodisplay:
-            if keypoints:
-                frame = cv2.drawKeypoints(frame, [keypoints[0]],
-                                   np.array([]),
-                                   (0,0,255), 
-                                   cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS) 
-                if len(keypoints) > 1:
-                    frame = cv2.drawKeypoints(frame, keypoints[1:],
-                                   np.array([]),
-                                   (255,205,25), 
-                                   cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS) 
-            if lines != None:
-                for l in lines[0]:
-                    cv2.line(frame, (l[0], l[1]), (l[2], l[3]), (20,255,255))
+        if self.args.nodisplay and self.args.stashinterval == 0:
+            return
 
-            if contours != None:
-                contours0,hier = contours
-                cindex = self.values[3] # if -1, all are drawn
-                maxlevel = self.values[4]
-                if len(contours0) <= cindex:
-                    self.putNotice("reset contour id")
-                    values[3] = -1
-                    cindex = -1
-                cv2.drawContours(frame, contours0, cindex,
+        if keypoints:
+            frame = cv2.drawKeypoints(frame, [keypoints[0]],
+                               np.array([]),
+                               (0,0,255), 
+                               cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS) 
+            if len(keypoints) > 1:
+                frame = cv2.drawKeypoints(frame, keypoints[1:],
+                               np.array([]),
+                               (255,205,25), 
+                               cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS) 
+        if lines != None:
+            for l in lines[0]:
+                cv2.line(frame, (l[0], l[1]), (l[2], l[3]), (20,255,255))
+
+        if contours != None:
+            contours0,hier = contours
+            cindex = self.values[3] # if -1, all are drawn
+            maxlevel = self.values[4]
+            if len(contours0) <= cindex:
+                self.putNotice("reset contour id")
+                values[3] = -1
+                cindex = -1
+            cv2.drawContours(frame, contours0, cindex,
                                 (128,255,255), 
                                 thickness=1, 
                                 lineType=cv2.CV_AA,
                                 hierarchy=hier, 
                                 maxLevel=maxlevel)
                 
-            cv2.imshow("img", frame)
+        if not self.args.nodisplay:
+           cv2.imshow("img", frame)
 
+        if self.args.stashinterval != 0 and \
+            (common.clock() - self.lastStashTime) > self.args.stashinterval:
+           cv2.imwrite(self.stashFilename, frame, self.stashParams)
+           self.lastStashTime = common.clock()
 
     def getCmode(self, num):
         return self.cmodelist[num]
@@ -549,7 +634,7 @@ class App:
             return self.cmodeValueCache[cmode]
         else:
             print("%s not cached, ..." % cmode)
-        return self, zeros
+        return self, self.zeros
 
     def setCmodeValues(self, cmode, values):
         self.cmodeValueCache[cmode] = values 
